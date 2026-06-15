@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Personal Telemetry</title>
+<style> html,body{margin:0;padding:0;background:#0E1116;} #root{min-height:100vh;} </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  // persistence backed by localStorage so it survives reloads on your own machine
+  window.storage = {
+    async get(k){ const v = localStorage.getItem(k); return v===null?null:{key:k,value:v}; },
+    async set(k,val){ try{ localStorage.setItem(k,String(val)); }catch(e){} return {key:k,value:String(val)}; },
+    async delete(k){ localStorage.removeItem(k); return {key:k,deleted:true}; },
+  };
+</script>
+<script type="text/babel" data-presets="react">
+  const { useState, useEffect, useMemo, useRef } = React;
+  const Papa = window.Papa;
+  const { ComposedChart, Bar, Line, Area, AreaChart, XAxis, YAxis, Tooltip,
+          CartesianGrid, ResponsiveContainer, Cell, ReferenceLine } = Recharts;
+
+
+/* ---------------------------------------------------------------------------
+   PERSONAL TELEMETRY — one timeline for WHOOP, Garmin and your scale.
+   Visual direction: a calm "instrument console". Deep ink panels, mono
+   numerals like a cockpit readout, and three fixed source hues used
+   everywhere so your eye learns them:
+     recovery/body-readiness (WHOOP)  -> emerald
+     training (Garmin)                -> amber
+     body composition (scale)         -> violet
+--------------------------------------------------------------------------- */
+
+const C = {
+  bg: "#0E1116", panel: "#161B22", panel2: "#1B222C", edge: "#243040",
+  text: "#E6EDF3", muted: "#8B97A7", faint: "#5C6675",
+  recovery: "#34D399", hrv: "#38BDF8", load: "#FBBF24", body: "#A78BFA",
+  red: "#FB7185", amber: "#FBBF24", green: "#34D399",
+};
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+.tele * { box-sizing: border-box; }
+.tele { background:${C.bg}; color:${C.text}; font-family:'Space Grotesk',system-ui,sans-serif;
+  min-height:100%; padding:22px; letter-spacing:.1px; }
+.mono { font-family:'JetBrains Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+.tele h1{ font-size:21px; font-weight:600; margin:0; letter-spacing:.4px; }
+.eyebrow{ font-size:11px; text-transform:uppercase; letter-spacing:2.4px; color:${C.faint}; }
+.panel{ background:${C.panel}; border:1px solid ${C.edge}; border-radius:14px; padding:18px; }
+.grid{ display:grid; gap:14px; }
+.kpi{ background:${C.panel}; border:1px solid ${C.edge}; border-radius:14px; padding:14px 16px;
+  position:relative; overflow:hidden; }
+.kpi .label{ font-size:11px; text-transform:uppercase; letter-spacing:1.6px; color:${C.muted}; }
+.kpi .val{ font-size:27px; font-weight:600; margin-top:6px; line-height:1; }
+.kpi .sub{ font-size:12px; color:${C.muted}; margin-top:7px; }
+.kpi .rail{ position:absolute; left:0; top:0; bottom:0; width:3px; }
+.delta{ font-weight:600; font-size:12px; }
+.up{ color:${C.green}; } .down{ color:${C.red}; } .flat{ color:${C.muted}; }
+.seg{ display:inline-flex; border:1px solid ${C.edge}; border-radius:9px; overflow:hidden; }
+.seg button{ background:transparent; color:${C.muted}; border:0; padding:6px 12px; font:inherit;
+  font-size:12px; cursor:pointer; }
+.seg button.on{ background:${C.panel2}; color:${C.text}; }
+.btn{ background:${C.panel2}; border:1px solid ${C.edge}; color:${C.text}; border-radius:9px;
+  padding:8px 14px; font:inherit; font-size:13px; cursor:pointer; }
+.btn:hover{ border-color:${C.faint}; }
+.btn.ghost{ background:transparent; color:${C.muted}; }
+.drop{ border:1.5px dashed ${C.edge}; border-radius:14px; padding:26px; text-align:center;
+  color:${C.muted}; transition:.15s; cursor:pointer; }
+.drop.hot{ border-color:${C.recovery}; background:rgba(52,211,153,.05); color:${C.text}; }
+.chip{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:${C.muted}; }
+.dot{ width:8px; height:8px; border-radius:50%; }
+table.wk{ width:100%; border-collapse:collapse; font-size:13px; }
+table.wk th{ text-align:right; color:${C.muted}; font-weight:500; font-size:11px;
+  text-transform:uppercase; letter-spacing:.8px; padding:8px 10px; border-bottom:1px solid ${C.edge}; }
+table.wk th:first-child{ text-align:left; }
+table.wk td{ padding:9px 10px; text-align:right; border-bottom:1px solid ${C.panel2}; }
+table.wk td:first-child{ text-align:left; color:${C.muted}; }
+.ins{ font-size:13px; line-height:1.5; padding:9px 0; border-bottom:1px solid ${C.panel2};
+  display:flex; gap:10px; }
+.ins:last-child{ border-bottom:0; }
+.note{ font-size:12px; color:${C.muted}; }
+`;
+
+/* ----------------------------- parsing helpers ---------------------------- */
+
+const lc = (s) => String(s || "").toLowerCase();
+const findCol = (headers, cands) =>
+  headers.find((h) => cands.some((c) => lc(h).includes(c)));
+const num = (v) => {
+  const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+const dateKey = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  // dd/mm/yyyy or mm/dd/yyyy fallback
+  const m = String(v).match(/(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})/);
+  if (m) {
+    let [, a, b, c] = m;
+    if (a.length === 4) return `${a}-${b.padStart(2,"0")}-${c.padStart(2,"0")}`;
+    return `${c}-${a.padStart(2,"0")}-${b.padStart(2,"0")}`;
+  }
+  return null;
+};
+const hmsToMin = (v) => {
+  const p = String(v).split(":").map(Number);
+  if (p.some(isNaN)) return num(v);
+  if (p.length === 3) return p[0]*60 + p[1] + p[2]/60;
+  if (p.length === 2) return p[0] + p[1]/60;
+  return num(v);
+};
+
+function detectSource(headers) {
+  const H = headers.map(lc).join("|");
+  if (/recovery score|day strain|heart rate variability/.test(H)) return "whoop";
+  if (/activity type|aerobic te|training load/.test(H)) return "garmin";
+  if (/(weight).*(fat|bmi|muscle)|fat mass|body fat|bmi/.test(H)) return "scale";
+  return "unknown";
+}
+
+function parseWhoop(rows, headers) {
+  const c = {
+    date: findCol(headers, ["cycle start", "date"]),
+    rec: findCol(headers, ["recovery score"]),
+    rhr: findCol(headers, ["resting heart rate"]),
+    hrv: findCol(headers, ["heart rate variability", "hrv"]),
+    strain: findCol(headers, ["day strain", "strain"]),
+    sleep: findCol(headers, ["sleep performance"]),
+  };
+  const out = {};
+  rows.forEach((r) => {
+    const k = dateKey(r[c.date]); if (!k) return;
+    out[k] = { recovery: num(r[c.rec]), rhr: num(r[c.rhr]), hrv: num(r[c.hrv]),
+               strain: num(r[c.strain]), sleep: num(r[c.sleep]) };
+  });
+  return out;
+}
+
+function parseGarmin(rows, headers) {
+  const c = {
+    date: findCol(headers, ["date"]),
+    dist: findCol(headers, ["distance"]),
+    cal: findCol(headers, ["calories"]),
+    time: findCol(headers, ["moving time", "elapsed time", "time"]),
+    load: findCol(headers, ["training load", "load"]),
+    te: findCol(headers, ["aerobic te", "training effect"]),
+  };
+  const out = {};
+  rows.forEach((r) => {
+    const k = dateKey(r[c.date]); if (!k) return;
+    const cur = out[k] || { acts: 0, distKm: 0, cal: 0, durMin: 0, load: 0, te: 0 };
+    cur.acts += 1;
+    cur.distKm += num(r[c.dist]) || 0;
+    cur.cal += num(r[c.cal]) || 0;
+    cur.durMin += hmsToMin(r[c.time]) || 0;
+    cur.load += num(r[c.load]) || 0;
+    cur.te = Math.max(cur.te, num(r[c.te]) || 0);
+    out[k] = cur;
+  });
+  // if no explicit training-load column, approximate load from duration*intensity proxy
+  Object.values(out).forEach((d) => {
+    if (!d.load) d.load = Math.round((d.durMin || 0) * (d.te ? d.te / 3 : 0.6));
+  });
+  return out;
+}
+
+function parseScale(rows, headers, unitLb) {
+  const c = {
+    date: findCol(headers, ["date", "time of measurement", "time"]),
+    wt: findCol(headers, ["weight"]),
+    fat: findCol(headers, ["body fat", "fat mass", "fat("]),
+    lean: findCol(headers, ["muscle mass", "fat-free", "lean"]),
+    bmi: findCol(headers, ["bmi"]),
+  };
+  const lb = unitLb || /lb/.test(lc(c.wt || ""));
+  const k2kg = (x) => (x == null ? null : lb ? x * 0.453592 : x);
+  const out = {};
+  rows.forEach((r) => {
+    const k = dateKey(r[c.date]); if (!k) return;
+    out[k] = { weight: k2kg(num(r[c.wt])), bodyFat: num(r[c.fat]),
+               lean: k2kg(num(r[c.lean])), bmi: num(r[c.bmi]) };
+  });
+  return out;
+}
+
+function parseCsv(text, forced) {
+  const res = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+  const headers = res.meta.fields || [];
+  const src = forced && forced !== "auto" ? forced : detectSource(headers);
+  let mapped = {};
+  if (src === "whoop") mapped = parseWhoop(res.data, headers);
+  else if (src === "garmin") mapped = parseGarmin(res.data, headers);
+  else if (src === "scale") mapped = parseScale(res.data, headers);
+  return { src, mapped, count: Object.keys(mapped).length };
+}
+
+/* merge a {date: fields} map into the master store */
+function mergeStore(store, src, mapped) {
+  const next = { ...store };
+  Object.entries(mapped).forEach(([d, fields]) => {
+    const cur = next[d] ? { ...next[d] } : { date: d };
+    if (src === "whoop") Object.assign(cur, fields);
+    if (src === "garmin") cur.garmin = { ...(cur.garmin || {}), ...fields };
+    if (src === "scale") Object.assign(cur, fields);
+    next[d] = cur;
+  });
+  return next;
+}
+
+/* merge already-day-shaped records (from the live feed) into the store */
+function mergeDays(store, days) {
+  const next = { ...store };
+  Object.entries(days || {}).forEach(([d, fields]) => {
+    const cur = next[d] ? { ...next[d] } : { date: d };
+    Object.entries(fields).forEach(([key, val]) => {
+      if (val == null) return;
+      if (key === "garmin") cur.garmin = { ...(cur.garmin || {}), ...val };
+      else cur[key] = val;
+    });
+    next[d] = cur;
+  });
+  return next;
+}
+
+/* --------------------------------- math ----------------------------------- */
+
+const sortDays = (store) =>
+  Object.values(store).sort((a, b) => a.date.localeCompare(b.date));
+
+function rolling(arr, key, win) {
+  return arr.map((d, i) => {
+    const slice = arr.slice(Math.max(0, i - win + 1), i + 1)
+      .map((x) => x[key]).filter((v) => v != null);
+    return slice.length ? slice.reduce((a, b) => a + b, 0) / slice.length : null;
+  });
+}
+const avg = (xs) => { const v = xs.filter((x) => x != null); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+const fmt = (v, d = 0) => (v == null ? "–" : v.toFixed(d));
+
+/* ------------------------------ demo dataset ------------------------------ */
+
+function demoStore() {
+  const store = {}; const today = new Date();
+  let wt = 78.5, fat = 19.5, hrvBase = 62;
+  for (let i = 89; i >= 0; i--) {
+    const dt = new Date(today); dt.setDate(today.getDate() - i);
+    const k = dt.toISOString().slice(0, 10);
+    const dow = dt.getDay();
+    const train = [1,2,4,6].includes(dow) || Math.random() < 0.15;
+    const load = train ? Math.round(40 + Math.random()*160) : 0;
+    const strainHi = load > 130;
+    const recovery = Math.max(15, Math.min(99, Math.round(
+      72 - (strainHi ? 22 : load>0?8:-4) + (Math.random()*26-13))));
+    const hrv = Math.round(hrvBase + (recovery-72)*0.4 + (Math.random()*8-4));
+    const rhr = Math.round(52 - (recovery-72)*0.08 + (Math.random()*4-2));
+    const sleep = Math.max(40, Math.min(100, Math.round(70 + (Math.random()*40-20))));
+    wt += (Math.random()*0.4 - 0.23); fat += (Math.random()*0.12 - 0.075);
+    store[k] = {
+      date: k, recovery, hrv, rhr, sleep, strain: +(load/100*1.4 + Math.random()).toFixed(1),
+      weight: +wt.toFixed(1), bodyFat: +fat.toFixed(1), bmi: +(wt/ (1.82*1.82)).toFixed(1),
+      garmin: train ? { acts: 1, distKm: +(load/20).toFixed(1), cal: load*7,
+                        durMin: Math.round(load*0.6), load, te: +(load/45).toFixed(1) } : null,
+    };
+  }
+  return store;
+}
+
+/* ------------------------------- storage ---------------------------------- */
+const KEY = "telemetry:v1:store";
+const URL_KEY = "telemetry:v1:liveurl";
+let memFallback = null;
+const storage = {
+  async get() {
+    try { const r = await window.storage.get(KEY); return r ? JSON.parse(r.value) : null; }
+    catch { return memFallback; }
+  },
+  async set(v) {
+    memFallback = v;
+    try { await window.storage.set(KEY, JSON.stringify(v)); } catch {}
+  },
+  async getUrl() {
+    try { const r = await window.storage.get(URL_KEY); return r ? r.value : ""; }
+    catch { return ""; }
+  },
+  async setUrl(v) {
+    try { await window.storage.set(URL_KEY, v); } catch {}
+  },
+};
+
+/* ------------------------------- components -------------------------------- */
+
+function Kpi({ label, value, unit, sub, delta, deltaGood, color }) {
+  const dCls = delta == null ? "flat" : (delta > 0 === deltaGood ? "up" : delta === 0 ? "flat" : "down");
+  const arrow = delta == null || delta === 0 ? "" : delta > 0 ? "▲" : "▼";
+  return (
+    <div className="kpi">
+      <div className="rail" style={{ background: color }} />
+      <div className="label">{label}</div>
+      <div className="val mono">{value}<span style={{ fontSize: 14, color: C.muted }}>{unit}</span></div>
+      <div className="sub">
+        {sub}{" "}
+        {delta != null && <span className={`delta ${dCls}`}>{arrow} {Math.abs(delta).toFixed(1)}</span>}
+      </div>
+    </div>
+  );
+}
+
+const zoneColor = (rec) => rec == null ? C.faint : rec >= 67 ? C.green : rec >= 34 ? C.amber : C.red;
+
+function ReadinessLoad({ data }) {
+  const recLine = rolling(data, "recovery", 7);
+  const chart = data.map((d, i) => ({ ...d, recAvg: recLine[i] }));
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <ComposedChart data={chart} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+        <CartesianGrid stroke={C.panel2} vertical={false} />
+        <XAxis dataKey="date" tick={{ fill: C.faint, fontSize: 10 }} tickFormatter={(d)=>d.slice(5)} minTickGap={28} />
+        <YAxis yAxisId="l" tick={{ fill: C.faint, fontSize: 10 }} />
+        <YAxis yAxisId="r" orientation="right" domain={[0,100]} tick={{ fill: C.faint, fontSize: 10 }} />
+        <Tooltip content={<ChartTip />} />
+        <Bar yAxisId="l" dataKey={(d)=>d.garmin?.load||0} name="Training load" radius={[3,3,0,0]}>
+          {chart.map((d, i) => <Cell key={i} fill={zoneColor(d.recovery)} fillOpacity={0.9} />)}
+        </Bar>
+        <Line yAxisId="r" type="monotone" dataKey="recAvg" name="Recovery 7d" stroke={C.recovery}
+              strokeWidth={2} dot={false} />
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+function ChartTip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0]?.payload || {};
+  return (
+    <div className="panel mono" style={{ padding: "10px 12px", fontSize: 12 }}>
+      <div style={{ color: C.muted, marginBottom: 6 }}>{label}</div>
+      {d.recovery != null && <div><span style={{color:zoneColor(d.recovery)}}>●</span> Recovery {fmt(d.recovery)}%</div>}
+      {d.garmin?.load ? <div><span style={{color:C.load}}>●</span> Load {fmt(d.garmin.load)}</div> : null}
+      {d.hrv != null && <div><span style={{color:C.hrv}}>●</span> HRV {fmt(d.hrv)}ms</div>}
+      {d.weight != null && <div><span style={{color:C.body}}>●</span> Weight {fmt(d.weight,1)}kg</div>}
+    </div>
+  );
+}
+
+function TrendChart({ data, keyName, color, label, unit, win = 7 }) {
+  const ra = rolling(data, keyName, win);
+  const chart = data.map((d, i) => ({ date: d.date, raw: d[keyName], avg: ra[i] }));
+  return (
+    <ResponsiveContainer width="100%" height={170}>
+      <AreaChart data={chart} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+        <defs>
+          <linearGradient id={`g-${keyName}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity={0.25} />
+            <stop offset="100%" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid stroke={C.panel2} vertical={false} />
+        <XAxis dataKey="date" tick={{ fill: C.faint, fontSize: 10 }} tickFormatter={(d)=>d.slice(5)} minTickGap={30} />
+        <YAxis domain={["auto","auto"]} tick={{ fill: C.faint, fontSize: 10 }} width={34} />
+        <Tooltip contentStyle={{ background: C.panel, border: `1px solid ${C.edge}`, borderRadius: 8, fontSize: 12 }}
+                 labelStyle={{ color: C.muted }} formatter={(v)=>v==null?"–":`${(+v).toFixed(1)}${unit}`} />
+        <Area type="monotone" dataKey="raw" stroke="none" fill={`url(#g-${keyName})`} />
+        <Line type="monotone" dataKey="avg" stroke={color} strokeWidth={2} dot={false} />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function WeeklyTable({ data }) {
+  // last 7 days vs trailing 4-week avg
+  const week = data.slice(-7), prior = data.slice(-35, -7);
+  const rows = [
+    ["Recovery", "recovery", 0, "%", true],
+    ["HRV", "hrv", 0, "ms", true],
+    ["Resting HR", "rhr", 0, "bpm", false],
+    ["Sleep", "sleep", 0, "%", true],
+    ["Weight", "weight", 1, "kg", false],
+    ["Body fat", "bodyFat", 1, "%", false],
+  ];
+  const loadWk = avg(week.map(d=>d.garmin?.load||0)); 
+  const loadPr = avg(prior.map(d=>d.garmin?.load||0));
+  return (
+    <table className="wk">
+      <thead><tr><th>Metric</th><th>This week</th><th>4-wk avg</th><th>Δ</th></tr></thead>
+      <tbody>
+        {rows.map(([name, k, dec, u, good]) => {
+          const a = avg(week.map(d=>d[k])), b = avg(prior.map(d=>d[k]));
+          const delta = a != null && b != null ? a - b : null;
+          const cls = delta == null ? "flat" : (delta>0===good ? "up" : delta===0?"flat":"down");
+          return (
+            <tr key={k}>
+              <td>{name}</td>
+              <td className="mono">{a==null?"–":a.toFixed(dec)}{a!=null&&u}</td>
+              <td className="mono" style={{color:C.muted}}>{b==null?"–":b.toFixed(dec)}</td>
+              <td className={`mono delta ${cls}`}>{delta==null?"–":(delta>0?"+":"")+delta.toFixed(dec)}</td>
+            </tr>
+          );
+        })}
+        <tr>
+          <td>Daily load</td>
+          <td className="mono">{fmt(loadWk)}</td>
+          <td className="mono" style={{color:C.muted}}>{fmt(loadPr)}</td>
+          <td className={`mono delta ${loadWk>=loadPr?"up":"down"}`}>
+            {loadWk!=null&&loadPr!=null?(loadWk-loadPr>0?"+":"")+(loadWk-loadPr).toFixed(0):"–"}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+function Insights({ data }) {
+  const out = [];
+  const last30 = data.slice(-30), prev30 = data.slice(-60,-30);
+  const hrvN = avg(last30.map(d=>d.hrv)), hrvO = avg(prev30.map(d=>d.hrv));
+  if (hrvN && hrvO) {
+    const pct = ((hrvN-hrvO)/hrvO*100);
+    out.push([pct>=0?C.green:C.red, `HRV ${pct>=0?"up":"down"} ${Math.abs(pct).toFixed(0)}% over the last 30 days vs the prior 30 — ${pct>=0?"your baseline is climbing.":"worth watching for accumulated fatigue."}`]);
+  }
+  const wN = avg(last30.map(d=>d.weight)), wO = avg(prev30.map(d=>d.weight));
+  if (wN && wO) out.push([C.body, `Weight ${wN<wO?"down":"up"} ${Math.abs(wN-wO).toFixed(1)}kg over 30 days (30-day averages, so daily water-weight noise is filtered out).`]);
+  // hard days on low recovery
+  const mismatch = data.slice(-14).filter(d => (d.garmin?.load||0) > 120 && d.recovery != null && d.recovery < 34).length;
+  if (mismatch) out.push([C.amber, `${mismatch} hard session${mismatch>1?"s":""} in the last 2 weeks landed on a red-recovery day — the kind of pattern that precedes a plateau.`]);
+  const trained = data.slice(-7).filter(d=>d.garmin?.load).length;
+  out.push([C.load, `${trained} training day${trained!==1?"s":""} logged this week.`]);
+  return (
+    <div>
+      {out.map(([color, txt], i) => (
+        <div className="ins" key={i}>
+          <span className="dot" style={{ background: color, marginTop: 5, flex: "0 0 auto" }} />
+          <span>{txt}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* --------------------------------- app ------------------------------------ */
+
+function App() {
+  const [store, setStore] = useState({});
+  const [range, setRange] = useState(90);
+  const [hot, setHot] = useState(false);
+  const [log, setLog] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const fileRef = useRef();
+
+  // live feed
+  const [liveUrl, setLiveUrl] = useState("");
+  const [live, setLive] = useState({ state: "idle", msg: "" });
+  // manual weight entry (covers any missed scale sync)
+  const [mDate, setMDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [mWeight, setMWeight] = useState("");
+  const [mFat, setMFat] = useState("");
+
+  const fetchLive = async (url) => {
+    if (!url) return;
+    setLive({ state: "syncing", msg: "Syncing…" });
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const days = json.days || json;
+      const n = Object.keys(days).length;
+      setStore((prev) => { const next = mergeDays(prev, days); storage.set(next); return next; });
+      const when = json.updated ? new Date(json.updated).toLocaleString() : new Date().toLocaleTimeString();
+      setLive({ state: "ok", msg: `${n} days · updated ${when}` });
+    } catch (e) {
+      setLive({ state: "err", msg: `Couldn't fetch: ${e.message}` });
+    }
+  };
+
+  useEffect(() => { (async () => {
+    const s = await storage.get(); if (s) setStore(s);
+    const u = await storage.getUrl(); if (u) { setLiveUrl(u); fetchLive(u); }
+    setLoaded(true);
+  })(); }, []);
+
+  // poll the live feed every 5 minutes while a URL is set
+  useEffect(() => {
+    if (!liveUrl) return;
+    const id = setInterval(() => fetchLive(liveUrl), 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, [liveUrl]);
+
+  const connectLive = (u) => { setLiveUrl(u); storage.setUrl(u); fetchLive(u); };
+
+  const persist = (next) => { setStore(next); storage.set(next); };
+
+  const addManual = () => {
+    const w = parseFloat(mWeight), f = parseFloat(mFat);
+    if (!mDate || (isNaN(w) && isNaN(f))) return;
+    const fields = {};
+    if (!isNaN(w)) fields.weight = w;
+    if (!isNaN(f)) fields.bodyFat = f;
+    persist(mergeDays(store, { [mDate]: fields }));
+    setMWeight(""); setMFat("");
+  };
+
+  // Dropbox pull — credentials stored locally, never leave the browser
+  const DBX_KEY = "telemetry:v1:dbxcreds";
+  const GH_KEY  = "telemetry:v1:ghcreds";
+  const [dropboxCreds, setDropboxCredsState] = useState({ token: "", folder: "/Apps/Health Auto Export/health" });
+  const [ghCreds, setGhCredsState] = useState({ token: "", owner: "", repo: "", workflow: "sync.yml" });
+  const [dbxStatus, setDbxStatus] = useState({ state: "idle", msg: "" });
+  const [ghStatus,  setGhStatus]  = useState({ state: "idle", msg: "" });
+
+  useEffect(() => { (async () => {
+    try { const r = await window.storage.get(DBX_KEY); if (r) setDropboxCredsState(JSON.parse(r.value)); } catch {}
+    try { const r = await window.storage.get(GH_KEY);  if (r) setGhCredsState(JSON.parse(r.value)); }  catch {}
+  })(); }, []);
+
+  const setDropboxCreds = (v) => { setDropboxCredsState(v); try { window.storage.set(DBX_KEY, JSON.stringify(v)); } catch {} };
+  const setGhCreds      = (v) => { setGhCredsState(v);      try { window.storage.set(GH_KEY,  JSON.stringify(v)); } catch {} };
+
+  /* ---------- Pull directly from Dropbox in the browser ---------- */
+  const pullDropbox = async () => {
+    const { token, folder } = dropboxCreds;
+    if (!token) { setDbxStatus({ state: "err", msg: "Paste your Dropbox refresh token first" }); return; }
+    setDbxStatus({ state: "syncing", msg: "Connecting to Dropbox…" });
+    try {
+      // 1. Mint a short-lived access token from our refresh token
+      const tokRes = await fetch("https://api.dropboxapi.com/oauth2/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: token,
+          client_id: dropboxCreds.appKey || "",
+          client_secret: dropboxCreds.appSecret || "",
+        }),
+      });
+      const tokJson = await tokRes.json();
+      if (!tokJson.access_token) throw new Error("Dropbox auth failed — check your token, App key and App secret in settings");
+      const access = tokJson.access_token;
+      const h = { "Authorization": `Bearer ${access}` };
+
+      // 2. List all JSON files under the folder (recursive)
+      setDbxStatus({ state: "syncing", msg: "Listing files…" });
+      let entries = [], cursor = null;
+      do {
+        const listRes = await fetch(
+          cursor ? "https://api.dropboxapi.com/2/files/list_folder/continue"
+                 : "https://api.dropboxapi.com/2/files/list_folder",
+          { method: "POST", headers: { ...h, "Content-Type": "application/json" },
+            body: JSON.stringify(cursor ? { cursor } : { path: folder, recursive: true }) }
+        );
+        const listJson = await listRes.json();
+        if (listJson.error_summary) throw new Error(listJson.error_summary);
+        entries = entries.concat(listJson.entries || []);
+        cursor = listJson.has_more ? listJson.cursor : null;
+      } while (cursor);
+
+      const jsons = entries
+        .filter(e => e[".tag"] === "file" && e.name.toLowerCase().endsWith(".json"))
+        .sort((a, b) => b.server_modified.localeCompare(a.server_modified))
+        .slice(0, 60);
+
+      if (!jsons.length) throw new Error(`No JSON files found in ${folder} — run a manual export from Health Auto Export first`);
+
+      // 3. Download and parse each file, merge into timeline
+      setDbxStatus({ state: "syncing", msg: `Reading ${jsons.length} file(s)…` });
+      let merged = {};
+      for (const f of jsons) {
+        const dlRes = await fetch("https://content.dropboxapi.com/2/files/download", {
+          method: "POST",
+          headers: { ...h, "Dropbox-API-Arg": JSON.stringify({ path: f.path_lower }) },
+        });
+        const text = await dlRes.text();
+        try {
+          const payload = JSON.parse(text);
+          const data = payload.data || payload;
+          const partial = parseHealthExport(data);
+          Object.entries(partial).forEach(([k, v]) => {
+            merged[k] = merged[k] ? { ...merged[k], ...v, garmin: v.garmin || merged[k].garmin } : v;
+          });
+        } catch { /* skip unreadable files */ }
+      }
+      const n = Object.keys(merged).length;
+      setStore(prev => { const next = mergeDays(prev, merged); storage.set(next); return next; });
+      setDbxStatus({ state: "ok", msg: `✓ Merged ${n} days from Dropbox · ${new Date().toLocaleTimeString()}` });
+    } catch(e) {
+      setDbxStatus({ state: "err", msg: e.message });
+    }
+  };
+
+  /* ---------- Trigger GitHub Actions sync job (kicks off WHOOP pull) ---------- */
+  const triggerGithub = async () => {
+    const { token, owner, repo, workflow } = ghCreds;
+    if (!token || !owner || !repo) { setGhStatus({ state: "err", msg: "Fill in your GitHub token, username and repo name in settings" }); return; }
+    setGhStatus({ state: "syncing", msg: "Triggering sync job…" });
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
+        { method: "POST",
+          headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json",
+                     "Content-Type": "application/json" },
+          body: JSON.stringify({ ref: "main" }) }
+      );
+      if (res.status === 204) {
+        setGhStatus({ state: "ok", msg: "✓ Sync job triggered — pulls WHOOP and updates your gist. Refresh the live feed in ~30s." });
+      } else {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.message || `HTTP ${res.status}`);
+      }
+    } catch(e) {
+      setGhStatus({ state: "err", msg: e.message });
+    }
+  };
+
+  const ingest = (files) => {
+    const arr = [...files]; const msgs = [];
+    let next = { ...store }; let done = 0;
+    arr.forEach((f) => {
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          if (f.name.toLowerCase().endsWith(".json")) {
+            // Health Auto Export JSON
+            const payload = JSON.parse(r.result);
+            const data = payload.data || payload;
+            const partial = parseHealthExport(data);
+            const count = Object.keys(partial).length;
+            next = mergeDays(next, partial);
+            msgs.push(`✓ ${f.name} → Apple Health, ${count} days`);
+          } else {
+            const { src, mapped, count } = parseCsv(r.result);
+            if (src === "unknown") msgs.push(`✕ ${f.name}: couldn't tell which device this is from`);
+            else { next = mergeStore(next, src, mapped); msgs.push(`✓ ${f.name} → ${src.toUpperCase()}, ${count} days`); }
+          }
+        } catch (e) { msgs.push(`✕ ${f.name}: ${e.message}`); }
+        if (++done === arr.length) { persist(next); setLog(msgs); }
+      };
+      r.readAsText(f);
+    });
+  };
+
+  const days = useMemo(() => sortDays(store), [store]);
+  const view = useMemo(() => range === "all" ? days : days.slice(-range), [days, range]);
+  const latest = days[days.length - 1] || {};
+
+  // KPI deltas: last 7d avg vs previous 7d avg
+  const w0 = days.slice(-7), w1 = days.slice(-14, -7);
+  const d = (k) => { const a = avg(w0.map(x=>x[k])), b = avg(w1.map(x=>x[k])); return a!=null&&b!=null?a-b:null; };
+  const dWeight = (()=>{ const a=avg(w0.map(x=>x.weight)), b=avg(w1.map(x=>x.weight)); return a&&b?a-b:null;})();
+
+  const empty = days.length === 0;
+
+  return (
+    <div className="tele">
+      <style>{CSS}</style>
+
+      {/* header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:14, marginBottom:18 }}>
+        <div>
+          <div className="eyebrow">personal telemetry</div>
+          <h1>Body, recovery &amp; training — one timeline</h1>
+        </div>
+        <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+          <div className="seg">
+            {[30,90,365,"all"].map((r)=>(
+              <button key={r} className={range===r?"on":""} onClick={()=>setRange(r)}>
+                {r==="all"?"All":`${r}d`}
+              </button>
+            ))}
+          </div>
+          {empty && <button className="btn" onClick={()=>persist(demoStore())}>Load demo data</button>}
+          {!empty && <button className="btn ghost" onClick={()=>persist({})}>Clear</button>}
+        </div>
+      </div>
+
+      {/* legend */}
+      <div style={{ display:"flex", gap:18, marginBottom:16, flexWrap:"wrap" }}>
+        <span className="chip"><span className="dot" style={{background:C.recovery}}/>WHOOP · recovery & sleep</span>
+        <span className="chip"><span className="dot" style={{background:C.load}}/>Garmin · training load</span>
+        <span className="chip"><span className="dot" style={{background:C.body}}/>Scale · body composition</span>
+      </div>
+
+      {/* live feed bar */}
+      <LiveBar {...{ liveUrl, setLiveUrl, live, connectLive, fetchLive }} />
+
+      {empty ? (
+        <div className="panel" style={{ textAlign:"center", padding:48 }}>
+          <div style={{ fontSize:15, marginBottom:6 }}>No data yet</div>
+          <div className="note" style={{ marginBottom:20 }}>
+            Drop in CSV exports from WHOOP, Garmin Connect, or your scale — or load demo data to see how it works.
+          </div>
+          <UploadZone {...{ hot, setHot, ingest, fileRef }} />
+        </div>
+      ) : (
+        <>
+          {/* KPI strip */}
+          <div className="grid" style={{ gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", marginBottom:16 }}>
+            <Kpi label="Recovery" value={fmt(latest.recovery)} unit="%" color={C.recovery}
+                 sub="7d vs prior" delta={d("recovery")} deltaGood />
+            <Kpi label="HRV" value={fmt(avg(w0.map(x=>x.hrv)))} unit="ms" color={C.hrv}
+                 sub="7d avg" delta={d("hrv")} deltaGood />
+            <Kpi label="Resting HR" value={fmt(avg(w0.map(x=>x.rhr)))} unit="bpm" color={C.red}
+                 sub="7d avg" delta={d("rhr")} deltaGood={false} />
+            <Kpi label="Weight" value={fmt(avg(w0.map(x=>x.weight)),1)} unit="kg" color={C.body}
+                 sub="7d avg" delta={dWeight} deltaGood={false} />
+            <Kpi label="Load" value={fmt(avg(w0.map(x=>x.garmin?.load||0)))} unit="" color={C.load}
+                 sub="7d avg/day" />
+            <Kpi label="Sleep" value={fmt(avg(w0.map(x=>x.sleep)))} unit="%" color={C.recovery}
+                 sub="7d avg" delta={d("sleep")} deltaGood />
+          </div>
+
+          {/* signature chart */}
+          <div className="panel" style={{ marginBottom:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+              <div>
+                <div style={{ fontWeight:600 }}>Readiness vs. load</div>
+                <div className="note">Bars are daily training load, colored by that day's recovery. Line is your 7-day recovery trend.</div>
+              </div>
+            </div>
+            <ReadinessLoad data={view} />
+          </div>
+
+          {/* two-up trends */}
+          <div className="grid" style={{ gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))", marginBottom:16 }}>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:2 }}>HRV trend</div>
+              <div className="note" style={{ marginBottom:6 }}>7-day rolling average</div>
+              <TrendChart data={view} keyName="hrv" color={C.hrv} unit="ms" />
+            </div>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:2 }}>Resting heart rate</div>
+              <div className="note" style={{ marginBottom:6 }}>7-day rolling average</div>
+              <TrendChart data={view} keyName="rhr" color={C.red} unit="" />
+            </div>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:2 }}>Weight</div>
+              <div className="note" style={{ marginBottom:6 }}>7-day rolling average</div>
+              <TrendChart data={view} keyName="weight" color={C.body} unit="kg" />
+            </div>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:2 }}>Body fat</div>
+              <div className="note" style={{ marginBottom:6 }}>7-day rolling average</div>
+              <TrendChart data={view} keyName="bodyFat" color={C.body} unit="%" />
+            </div>
+          </div>
+
+          {/* bottom: weekly + insights + sync */}
+          <div className="grid" style={{ gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))" }}>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:10 }}>This week vs. your month</div>
+              <WeeklyTable data={days} />
+            </div>
+            <div className="panel">
+              <div style={{ fontWeight:600, marginBottom:6 }}>What's trending</div>
+              <Insights data={days} />
+            </div>
+            <SyncPanel {...{ hot, setHot, ingest, fileRef, log,
+                             mDate, setMDate, mWeight, setMWeight,
+                             mFat, setMFat, addManual,
+                             dropboxCreds, setDropboxCreds, pullDropbox, dbxStatus,
+                             ghCreds, setGhCreds, triggerGithub, ghStatus,
+                             fetchLive, liveUrl }} />
+          </div>
+        </>
+      )}
+
+      <div className="note" style={{ marginTop:18, textAlign:"center" }}>
+        Data is stored on your device and persists between sessions. {days.length} days tracked.
+      </div>
+    </div>
+  );
+}
+
+function UploadZone({ hot, setHot, ingest, fileRef }) {
+  return (
+    <>
+      <div className={`drop ${hot?"hot":""}`}
+           onClick={()=>fileRef.current?.click()}
+           onDragOver={(e)=>{e.preventDefault();setHot(true);}}
+           onDragLeave={()=>setHot(false)}
+           onDrop={(e)=>{e.preventDefault();setHot(false);ingest(e.dataTransfer.files);}}>
+        <div style={{ fontSize:13 }}>Drop files here, or click to browse</div>
+        <div className="note" style={{ marginTop:6 }}>Health Auto Export JSON · WHOOP CSV · Garmin CSV</div>
+      </div>
+      <input ref={fileRef} type="file" accept=".csv,.json" multiple style={{ display:"none" }}
+             onChange={(e)=>ingest(e.target.files)} />
+    </>
+  );
+}
+
+function LiveBar({ liveUrl, setLiveUrl, live, connectLive, fetchLive }) {
+  const dot = { idle: C.faint, syncing: C.amber, ok: C.recovery, err: C.red }[live.state];
+  return (
+    <div className="panel" style={{ marginBottom:16, padding:"12px 16px",
+         display:"flex", gap:12, alignItems:"center", flexWrap:"wrap" }}>
+      <span className="dot" style={{ background: dot, flex:"0 0 auto" }} />
+      <span style={{ fontSize:13, flex:"0 0 auto" }}>Live feed</span>
+      <input
+        value={liveUrl}
+        onChange={(e)=>setLiveUrl(e.target.value)}
+        placeholder="paste your gist raw timeline.json URL"
+        style={{ flex:"1 1 240px", minWidth:0, background:C.panel2, color:C.text,
+                 border:`1px solid ${C.edge}`, borderRadius:9, padding:"7px 10px",
+                 font:"inherit", fontSize:13 }} />
+      <button className="btn" onClick={()=>connectLive(liveUrl)}>
+        {liveUrl ? "Connect" : "Connect"}
+      </button>
+      {liveUrl && <button className="btn ghost" onClick={()=>fetchLive(liveUrl)}>Sync now</button>}
+      {live.msg && <span className="note" style={{ flex:"1 0 100%" }}>{live.msg}</span>}
+    </div>
+  );
+}
+
+/* ---------- browser-side Health Auto Export JSON parser ---------- */
+function parseHealthExport(data) {
+  const out = {};
+  const gv = x => (x && typeof x === "object") ? x.qty : x;
+  const gu = x => (x && typeof x === "object") ? String(x.units||"").toLowerCase() : "";
+  const sd = (k, fields) => { out[k] = { ...(out[k]||{}), ...fields }; };
+
+  for (const m of (data.metrics || [])) {
+    const name = (m.name||"").toLowerCase();
+    const lb = (m.units||"").toLowerCase().includes("lb");
+    for (const pt of (m.data||[])) {
+      const k = dateKey(pt.date); const qty = pt.qty;
+      if (!k || qty == null) continue;
+      const val = lb ? qty * 0.453592 : qty;
+      if (name.includes("fat")) sd(k, { bodyFat: qty });
+      else if (name.includes("lean")) sd(k, { lean: val });
+      else if (name.includes("weight")||name.includes("mass")) sd(k, { weight: val });
+    }
+  }
+
+  const seen = new Set();
+  for (const w of (data.workouts || [])) {
+    const id = String(w.start||w.id||Math.random());
+    if (seen.has(id)) continue; seen.add(id);
+    const k = dateKey(w.start); if (!k) continue;
+    const dur = (gv(w.duration)||0) / 60;
+    const dist = gv(w.distance)||0; const du = gu(w.distance);
+    const dkm = du.includes("mi") ? dist*1.60934 : du.startsWith("m") ? dist/1000 : dist;
+    const hr = gv(w.avgHeartRate)||gv(w.averageHeartRate)||0;
+    const load = dur ? Math.round(dur*(0.6+Math.max(0,hr-100)/100)) : 0;
+    const cal = gv(w.activeEnergyBurned)||gv(w.totalEnergyBurned)||0;
+    const prev = (out[k]||{}).garmin || {acts:0,distKm:0,durMin:0,load:0,cal:0,te:0};
+    sd(k, { garmin: { ...prev, acts:prev.acts+1, distKm:prev.distKm+dkm,
+                      durMin:prev.durMin+dur, load:prev.load+load, cal:prev.cal+cal } });
+  }
+  return out;
+}
+
+/* ---------- SyncPanel ---------- */
+function SyncPanel({ hot, setHot, ingest, fileRef, log,
+                     mDate, setMDate, mWeight, setMWeight,
+                     mFat, setMFat, addManual,
+                     dropboxCreds, setDropboxCreds, pullDropbox, dbxStatus,
+                     ghCreds, setGhCreds, triggerGithub, ghStatus,
+                     fetchLive, liveUrl }) {
+  const [showDbxCreds, setShowDbxCreds] = useState(false);
+  const [showGhCreds,  setShowGhCreds]  = useState(false);
+  const inp = { background:C.panel2, color:C.text, border:`1px solid ${C.edge}`,
+    borderRadius:9, padding:"7px 10px", font:"inherit", fontSize:13, width:"100%" };
+  const dbxDot = { idle:C.faint, syncing:C.amber, ok:C.recovery, err:C.red }[dbxStatus.state];
+  const ghDot  = { idle:C.faint, syncing:C.amber, ok:C.recovery, err:C.red }[ghStatus.state];
+  const divider = <div style={{ borderTop:`1px solid ${C.edge}`, margin:"16px 0" }} />;
+
+  return (
+    <div className="panel" style={{ gridColumn:"1 / -1" }}>
+      <div style={{ fontWeight:600, marginBottom:4, fontSize:15 }}>Sync data</div>
+      <div className="note" style={{ marginBottom:16 }}>
+        Once a week: pull Dropbox after your Health Auto Export, then trigger WHOOP. Everything else is automatic.
+      </div>
+
+      {/* ── 1. Scale + Garmin: pull from Dropbox ── */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span className="dot" style={{ background:dbxDot }} />
+        <span style={{ fontWeight:500 }}>Scale + Garmin workouts</span>
+        <span className="note">via Dropbox · Health Auto Export</span>
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:6 }}>
+        <button className="btn" onClick={pullDropbox}
+                style={{ background:C.body, color:"#fff", fontWeight:600, fontSize:14, padding:"10px 22px", border:"none" }}>
+          ↓ Pull from Dropbox
+        </button>
+        <button className="btn ghost" style={{ fontSize:12 }} onClick={()=>setShowDbxCreds(s=>!s)}>
+          {showDbxCreds ? "Hide settings" : "⚙ Settings"}
+        </button>
+      </div>
+      {dbxStatus.msg && (
+        <div className="note mono" style={{ marginBottom:8,
+          color: dbxStatus.state==="err" ? C.red : dbxStatus.state==="ok" ? C.recovery : C.muted }}>
+          {dbxStatus.msg}
+        </div>
+      )}
+      {showDbxCreds && (
+        <div style={{ display:"grid", gap:8, marginTop:8, marginBottom:4 }}>
+          <div className="note">Stored only in this browser. Never transmitted anywhere except Dropbox's own API.</div>
+          <input type="password" placeholder="Dropbox refresh token"
+                 value={dropboxCreds.token}
+                 onChange={e=>setDropboxCreds({...dropboxCreds, token:e.target.value})}
+                 style={inp} />
+          <div style={{ display:"flex", gap:8 }}>
+            <input type="text" placeholder="Dropbox App key"
+                   value={dropboxCreds.appKey||""}
+                   onChange={e=>setDropboxCreds({...dropboxCreds, appKey:e.target.value})}
+                   style={inp} />
+            <input type="password" placeholder="Dropbox App secret"
+                   value={dropboxCreds.appSecret||""}
+                   onChange={e=>setDropboxCreds({...dropboxCreds, appSecret:e.target.value})}
+                   style={inp} />
+          </div>
+          <input type="text" placeholder="Folder e.g. /Apps/Health Auto Export/health"
+                 value={dropboxCreds.folder}
+                 onChange={e=>setDropboxCreds({...dropboxCreds, folder:e.target.value})}
+                 style={inp} />
+        </div>
+      )}
+
+      {divider}
+
+      {/* ── 2. WHOOP: trigger GitHub Actions ── */}
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+        <span className="dot" style={{ background:ghDot }} />
+        <span style={{ fontWeight:500 }}>WHOOP</span>
+        <span className="note">trigger a fresh pull · also refreshes the live feed</span>
+      </div>
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:6 }}>
+        <button className="btn" onClick={async()=>{ await triggerGithub(); setTimeout(()=>fetchLive(liveUrl), 35000); }}
+                style={{ background:C.recovery, color:"#000", fontWeight:600, fontSize:14, padding:"10px 22px", border:"none" }}>
+          ↻ Run WHOOP sync
+        </button>
+        <button className="btn ghost" style={{ fontSize:12 }} onClick={()=>setShowGhCreds(s=>!s)}>
+          {showGhCreds ? "Hide settings" : "⚙ Settings"}
+        </button>
+        {liveUrl && (
+          <button className="btn ghost" style={{ fontSize:12 }} onClick={()=>fetchLive(liveUrl)}>
+            Refresh dashboard now
+          </button>
+        )}
+      </div>
+      {ghStatus.msg && (
+        <div className="note mono" style={{ marginBottom:8,
+          color: ghStatus.state==="err" ? C.red : ghStatus.state==="ok" ? C.recovery : C.muted }}>
+          {ghStatus.msg}
+        </div>
+      )}
+      {showGhCreds && (
+        <div style={{ display:"grid", gap:8, marginTop:8, marginBottom:4 }}>
+          <div className="note">A GitHub fine-grained token with Actions: write on your repo. Stored only in this browser.</div>
+          <input type="password" placeholder="GitHub fine-grained token (ghp_...)"
+                 value={ghCreds.token}
+                 onChange={e=>setGhCreds({...ghCreds, token:e.target.value})}
+                 style={inp} />
+          <div style={{ display:"flex", gap:8 }}>
+            <input type="text" placeholder="GitHub username"
+                   value={ghCreds.owner}
+                   onChange={e=>setGhCreds({...ghCreds, owner:e.target.value})}
+                   style={inp} />
+            <input type="text" placeholder="repo name e.g. health-sync"
+                   value={ghCreds.repo}
+                   onChange={e=>setGhCreds({...ghCreds, repo:e.target.value})}
+                   style={inp} />
+          </div>
+        </div>
+      )}
+
+      {divider}
+
+      {/* ── 3. Manual file drop ── */}
+      <div style={{ fontWeight:500, marginBottom:8 }}>
+        Drop a file directly
+        <span className="note" style={{ fontWeight:400 }}> · Health Auto Export JSON, WHOOP CSV</span>
+      </div>
+      <UploadZone {...{ hot, setHot, ingest, fileRef }} />
+      {log.length > 0 && (
+        <div className="note mono" style={{ marginTop:10, lineHeight:1.7 }}>
+          {log.map((l,i)=><div key={i}>{l}</div>)}
+        </div>
+      )}
+
+      {divider}
+
+      {/* ── 4. Manual weight ── */}
+      <div style={{ fontWeight:500, marginBottom:8 }}>
+        Log weight manually
+        <span className="note" style={{ fontWeight:400 }}> · for any missed weigh-ins</span>
+      </div>
+      <div style={{ display:"grid", gap:8 }}>
+        <input type="date" value={mDate} onChange={e=>setMDate(e.target.value)} style={inp} />
+        <div style={{ display:"flex", gap:8 }}>
+          <input type="number" step="0.1" placeholder="weight (kg)" value={mWeight}
+                 onChange={e=>setMWeight(e.target.value)} style={inp} />
+          <input type="number" step="0.1" placeholder="body fat %" value={mFat}
+                 onChange={e=>setMFat(e.target.value)} style={inp} />
+        </div>
+        <button className="btn" onClick={addManual} style={{ alignSelf:"start" }}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
